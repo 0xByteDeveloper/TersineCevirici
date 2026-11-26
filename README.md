@@ -9,6 +9,31 @@ Doğrulanmış hedef: `Test_64_mutation.vmp.exe` → MovePlayer (42/42 talimat, 
 hedefi, 9 RIP-göreli sembol adresi birebir) + `Test_64_moveplayer_virtualization.vmp.exe`
 → 111.170 adımlık VM yürütmesi, 51 komut-dispatch, 12/12 konuk olayı oracle ile eşleşti.
 
+## V327/V328 — Yeni yetenekler
+
+- **`etiket` komutu** — komut→tip semantik etiketleme: her VM komutu dispatch-arası yazmaç
+  deltaları + bellek olayları + WrapPos giriş/çıkış kanıtlarıyla kullanıcı 42-tip sınıfına
+  bağlanır (LOAD/STORE/RMW/CALL/PROLOG/EPILOG/ARITH-FUSE/VM-İÇ). **4/4 varyant C++ ↔ Python
+  birebir doğrulandı**: VARSAYILAN 51, c100 8, ultra 859, ultra_c100 23 komut — dağılımlar
+  dahil tam eşleşme (kanıt: work/v327/etiket_*.txt + etiket_ozet.json)
+- **`avtuzak` komutu** — AV-tuzak aday tarayıcı: `[base + idx*scale - K]` desenli talimatları
+  bulur (V327 ALL teşhisi: `movzx r9d,[rdx+r9*2-0xf187d1a]` → sabit=idx*scale → EA=base →
+  bilinçli NULL-page okuması → gerçek Windows'ta ACCESS_VIOLATION → VEH değer üretir →
+  yığın-LUT indeksi). ALL'da 0x142998C82-0x142998D11 bölgesinde 3 aday bulundu
+- **AV-tuzak kaba kuvvet** (Python tarafı, scripts/v328_av_kaba.py): sayfa-0'ı K baytıyla
+  doldurup 256 koşu — bit-3 set olan 58 K değeri kızaksız farklı yola sapıyor (VEH değerinin
+  akışı dallayan gerçek bileşeni); K=0xE0 1.23M talimata kadar koşuyor (normal ~345K)
+
+## ALL (Pack) teşhisi — özet (V327, kanıtlı)
+
+ALL'un emülatörde çözülemediği şey **antidebug/antivm DEĞİL** (TEB/PEB/Ldr/KUSER kuruldu —
+fark yok; 9'luk giriş matrisi deterministik; syscall kullanmıyor; API çağrısı 0). Gerçek
+neden: **istisna-tabanlı unpacker** — bilinçli null-okuma → AV → VEH'in ürettiği değer
+yığın-LUT'a indeks. LZMA formatı da çözüldü (3.5.1 kaynağından): PACKER_INFO {Src,Dst}
+tablosu + props 5 bayt AYRI + akışta boyut alanı YOK (end-marker'lı, dict 1<<24, level 9).
+ALL'da .#:V bölümü bu tablodur (25 girdi; Src'ler .cqM-içi göreli ofset; Dst'ler koşu-anında
+çözülür). Statik LZMA 0 aday = akışlar koşu-anı anahtarlı.
+
 ## Ne yapıyor?
 
 1. **PE yükleyici** — bölüm tablosunu belleğe serer (RVA→VA eşlemesi, image base 0x140000000)
@@ -51,6 +76,15 @@ Bağımlılıklar: Capstone (libcapstone), Unicorn (libunicorn). `Makefile` içi
 
 # 4) Doğal oracle — orijinal exe'de referans olay dizisi
 ./tersinecevirici oracle    <orijinal.exe> [yon]
+
+# 5) Komut→tip semantik etiketleme (V327 — 4/4 varyant Python ile birebir)
+./tersinecevirici etiket    <korumali.exe> <giris-va> [yon=2]
+#   ornek: etiket Test_64_moveplayer_virtualization_complexity_100.vmp.exe 0x140001530 2
+#   c100 → 8 komut: LOAD(pos)→CALL(WrapPos)×2→PROLOG×3→STORE(pos)→RMW(g_score,g_dots)
+
+# 6) AV-tuzak aday taraması (V327 ALL teşhisi — istisna-tabanlı unpacker)
+./tersinecevirici avtuzak   <korumali.exe> <bas-va> <son-va>
+#   ornek: avtuzak Test_64_ALL.vmp.exe 0x142998C82 0x142998D11 → 3 aday (0x142998CC2 dahil)
 ```
 
 ## Çıktı örneği (mutasyon, Test_64_mutation.vmp.exe)

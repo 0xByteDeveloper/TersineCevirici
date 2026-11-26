@@ -1,9 +1,10 @@
-// tersinecevirici.cpp — main: 4 alt komut (girisler | mutasyon | vmtrace | oracle)
+// tersinecevirici.cpp — main: 6 alt komut (girisler | mutasyon | vmtrace | oracle | etiket | avtuzak)
 #include "tc_pe.hpp"
 #include "tc_disasm.hpp"
 #include "tc_mutasyon.hpp"
 #include "tc_vm.hpp"
 #include "tc_oracle.hpp"
+#include "tc_etiket.hpp"
 #include "tc_kurulum.hpp"
 #include <cstdio>
 #include <cstring>
@@ -138,20 +139,82 @@ static int cmd_oracle(int argc, char** argv) {
     return orc.temiz_donus ? 0 : 1;
 }
 
+// ---- V327: komut→tip etiketleme (941/941 karşılığı) ----
+static int cmd_etiket(int argc, char** argv) {
+    if (argc < 4) {
+        fprintf(stderr, "kullanim: etiket <korumali.exe> <giris-va-hex> [yon=2]\n"
+                        "  ornek: etiket Test_64_moveplayer_virtualization.vmp.exe 14007602F\n");
+        return 2;
+    }
+    PE pe; std::string hata;
+    if (!pe_yukle(argv[2], pe, hata)) { fprintf(stderr, "%s\n", hata.c_str()); return 1; }
+    uint64_t giris = adres_oku(argv[3]);
+    if (!giris) { fprintf(stderr, "giris-va gecersiz\n"); return 1; }
+    uint64_t yon = argc > 4 ? adres_oku(argv[4], 2) : 2;
+    bool temiz = false;
+    uint64_t insn = 0;
+    std::vector<KomutEtiketi> E = etiket_kos(pe, giris, VM_DONUS, yon, &insn, &temiz);
+    printf("KOMUT->TIP ETIKETLEME (giris=0x%llX yon=%llu donus=%s)\n",
+           (unsigned long long)giris, (unsigned long long)yon, temiz ? "TEMIZ" : "HATALI");
+    cizgi();
+    std::map<std::string, int> dagilim;
+    for (auto& e : E) {
+        std::string temel = e.tip.substr(0, e.tip.find('('));
+        dagilim[temel]++;
+        printf("  komut#%-4d %-22s %s\n", e.komut_no, e.tip.c_str(), e.kanit.c_str());
+    }
+    cizgi();
+    int vm_ic = 0, toplam = (int)E.size();
+    for (auto& [k, v] : dagilim) {
+        printf("  %-14s %d\n", k.c_str(), v);
+        if (k == "VM-İÇ" || k == "VM-iç" || k.find("VM") == 0) vm_ic += v;
+    }
+    printf("TOPLAM: %d komut | VM-İÇ %d (%.0f%%) — obfuscasyon/yönetim\n",
+           toplam, vm_ic, toplam ? 100.0 * vm_ic / toplam : 0.0);
+    return temiz ? 0 : 1;
+}
+
+// ---- V327: AV-tuzak statik taraması (ALL/unpacker gövdeleri) ----
+static int cmd_avtuzak(int argc, char** argv) {
+    if (argc < 4) {
+        fprintf(stderr, "kullanim: avtuzak <korumali.exe> <bas-va-hex> <son-va-hex>\n"
+                        "  ornek: avtuzak Test_64_ALL.vmp.exe 142998C82 142998D11\n");
+        return 2;
+    }
+    PE pe; std::string hata;
+    if (!pe_yukle(argv[2], pe, hata)) { fprintf(stderr, "%s\n", hata.c_str()); return 1; }
+    uint64_t bas = adres_oku(argv[3]), son = adres_oku(argv[4]);
+    if (!bas || !son || son <= bas) { fprintf(stderr, "aralik gecersiz\n"); return 1; }
+    std::vector<AvTuzakBulgusu> B = av_tuzak_tara(pe, bas, son);
+    printf("AV-TUZAK ADAYLARI [0x%llX..0x%llX) — %zu adet\n",
+           (unsigned long long)bas, (unsigned long long)son, B.size());
+    cizgi();
+    for (auto& b : B)
+        printf("  0x%llX  %-44s %s\n", (unsigned long long)b.va, b.talimat.c_str(), b.neden.c_str());
+    printf("NOT: aday = [base + idx*scale - K] deseni; kesin tuzak için koşu-anı\n"
+           "     doğrulama gerekir (K == idx*scale → EA=base → bilinçli null-okuma).\n"
+           "     V327 kanıtı: 0x142998CC2 movzx r9d,[rdx+r9*2-0xf187d1a] EA=rdx=8.\n");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
-        printf("TersineCevirici — VMProtect 3.9.4 devirtualizer (V324 zinciri, C++)\n"
+        printf("TersineCevirici — VMProtect 3.9.4 devirtualizer (V324-V327 zinciri, C++)\n"
                "Alt komutlar:\n"
                "  girisler <orijinal.exe> <korunmus1.exe> [...]   0x14C0 jmp hedef envanteri\n"
                "  mutasyon <korunmus.exe> [giris-va]              birebir cikarim + junk raporu\n"
                "  vmtrace  <korumali.exe> <orijinal.exe> [yon]    VM iz + oracle karsilastirma\n"
-               "  oracle  <orijinal.exe> [yon]                    dogal referans olay dizisi\n");
+               "  oracle  <orijinal.exe> [yon]                    dogal referans olay dizisi\n"
+               "  etiket  <korumali.exe> <giris-va> [yon]         komut->tip semantik etiketleme (V327)\n"
+               "  avtuzak <korumali.exe> <bas-va> <son-va>        AV-tuzak aday taramasi (V327 ALL teshisi)\n");
         return 0;
     }
     if (!strcmp(argv[1], "girisler"))  return cmd_girisler(argc, argv);
     if (!strcmp(argv[1], "mutasyon"))  return cmd_mutasyon(argc, argv);
     if (!strcmp(argv[1], "vmtrace"))   return cmd_vmtrace(argc, argv);
     if (!strcmp(argv[1], "oracle"))    return cmd_oracle(argc, argv);
+    if (!strcmp(argv[1], "etiket"))    return cmd_etiket(argc, argv);
+    if (!strcmp(argv[1], "avtuzak"))   return cmd_avtuzak(argc, argv);
     fprintf(stderr, "bilinmeyen alt komut: %s\n", argv[1]);
     return 2;
 }
