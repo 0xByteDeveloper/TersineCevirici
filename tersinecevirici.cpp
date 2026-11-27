@@ -5,6 +5,7 @@
 #include "tc_vm.hpp"
 #include "tc_oracle.hpp"
 #include "tc_etiket.hpp"
+#include "tc_unpack.hpp"
 #include "tc_kurulum.hpp"
 #include <cstdio>
 #include <cstring>
@@ -197,6 +198,61 @@ static int cmd_avtuzak(int argc, char** argv) {
     return 0;
 }
 
+// unpack (V333): ALL statik dekompres — props imzası → PACKER_INFO → LZMA akış listesi
+// + known-plaintext import key. Bölümlerin geri yazımı harici (LZMA decode) yapılır;
+// bu komut tabloyu, akış konumlarını ve import kayıtlarını çıkarır.
+static int cmd_unpack(int argc, char** argv) {
+    if (argc < 3) {
+        fprintf(stderr, "kullanim: unpack <korumali.exe> [bilinen-dll-adi]\n"
+                        "  ornek: unpack Test_64_ALL.vmp.exe api-ms-win-crt-private-l1-1-0.dll\n"
+                        "  cikti: PACKER_INFO tablosu + [Src][Dst] akis listesi + import tablosu\n");
+        return 2;
+    }
+    PE pe; std::string hata;
+    if (!pe_yukle(argv[2], pe, hata)) { fprintf(stderr, "%s\n", hata.c_str()); return 1; }
+
+    // Adim 2-3: props + PACKER_INFO
+    UnpackTablo T = unpack_tablo_bul(pe);
+    if (!T.tablo_off) {
+        printf("PACKER_INFO bulunamadi — pack kapali olabilir (bolumler RSZ'li).\n");
+        return 1;
+    }
+    printf("PROPS RVA=0x%X  PACKER_INFO tablo @0x%X  akis girisi=%zu\n",
+           T.props_rva, T.tablo_off, T.girisler.size());
+    cizgi();
+    for (auto& g : T.girisler) {
+        uint32_t off = 0;
+        for (const auto& b : pe.bolumler)
+            if (g.src >= b.va && g.src < b.va + (b.vsz > b.rsz ? b.vsz : b.rsz) && b.rsz)
+                { off = b.ra + (g.src - b.va); break; }
+        const char* ad = "?";
+        for (const auto& b : pe.bolumler) if (g.dst == b.va) ad = b.ad.c_str();
+        printf("  Src=0x%-8X Dst=0x%-8X (%-8s akis dosya-off=0x%X)\n", g.src, g.dst, ad, off);
+    }
+    printf("NOT: akislari LZMA FORMAT_RAW ile cozun (dict=1<<24, lc=3, lp=0, pb=2)\n"
+           "     (V332 kaniti: .data 100%% birebir, .text korunan kod birebir)\n");
+
+    // Adim 5: import key (known-plaintext)
+    if (argc > 3) {
+        uint32_t konum = 0;
+        uint32_t key = unpack_key_bul(pe, argv[3], konum);
+        if (key) {
+            printf("\nIMPORT KEY=0x%08X (bilinen ad @0x%X)\n", key, konum);
+            auto kayitlar = unpack_import_tara(pe, key);
+            printf("IMPORT KAYITLARI: %zu\n", kayitlar.size());
+            cizgi();
+            size_t goster = kayitlar.size() > 20 ? 20 : kayitlar.size();
+            for (size_t i = 0; i < goster; i++)
+                printf("  @0x%06X  %-42s V1=0x%06X V2=0x%08X\n",
+                       kayitlar[i].konum, kayitlar[i].ad.c_str(), kayitlar[i].v1, kayitlar[i].v2);
+            if (kayitlar.size() > goster) printf("  ... +%zu daha\n", kayitlar.size() - goster);
+        } else {
+            printf("\nIMPORT KEY bulunamadi (bilinen dll adi eslesmedi)\n");
+        }
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         printf("TersineCevirici — VMProtect 3.9.4 devirtualizer (V324-V327 zinciri, C++)\n"
@@ -206,7 +262,8 @@ int main(int argc, char** argv) {
                "  vmtrace  <korumali.exe> <orijinal.exe> [yon]    VM iz + oracle karsilastirma\n"
                "  oracle  <orijinal.exe> [yon]                    dogal referans olay dizisi\n"
                "  etiket  <korumali.exe> <giris-va> [yon]         komut->tip semantik etiketleme (V327)\n"
-               "  avtuzak <korumali.exe> <bas-va> <son-va>        AV-tuzak aday taramasi (V327 ALL teshisi)\n");
+               "  avtuzak <korumali.exe> <bas-va> <son-va>        AV-tuzak aday taramasi (V327 ALL teshisi)\n"
+               "  unpack  <korumali.exe> [bilinen-dll]           ALL statik dekompres tablosu + import key (V333)\n");
         return 0;
     }
     if (!strcmp(argv[1], "girisler"))  return cmd_girisler(argc, argv);
@@ -215,6 +272,7 @@ int main(int argc, char** argv) {
     if (!strcmp(argv[1], "oracle"))    return cmd_oracle(argc, argv);
     if (!strcmp(argv[1], "etiket"))    return cmd_etiket(argc, argv);
     if (!strcmp(argv[1], "avtuzak"))   return cmd_avtuzak(argc, argv);
+    if (!strcmp(argv[1], "unpack"))    return cmd_unpack(argc, argv);
     fprintf(stderr, "bilinmeyen alt komut: %s\n", argv[1]);
     return 2;
 }
