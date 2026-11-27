@@ -86,7 +86,7 @@ static bool string_coz(const std::vector<uint8_t>& img, uint32_t off, uint32_t k
     cikti.clear();
     for (size_t i = 0; i < 260 && off + i < img.size(); i++) {
         uint8_t c = img[off + i] ^ uint8_t(rotl32(key, int(i)) + uint32_t(i));
-        if (!c) return cikti.size() >= 3;
+        if (!c) return cikti.size() >= 6;
         if (c < 32 || c >= 127) return false;
         cikti.push_back(char(c));
     }
@@ -117,25 +117,34 @@ uint32_t unpack_key_bul(const PE& pe, const std::string& bilinen_dll_adi,
 
 // Import tablosu taraması: [Name_RVA][V1][V2] 12-bayt kayıtlar (V333-b: 148 kayıt, 0xE3D7D)
 std::vector<ImportKayit> unpack_import_tara(const PE& pe, uint32_t key) {
+    // V334: tablo = ardışık kayıt ZİNCİRİ (>=3) — tekil false-positive'ler elenir.
+    // Kayıt: [Name_RVA][V1][V2] 12 bayt; DLL başlığı: [Name_RVA][IAT_baş][0].
     std::vector<ImportKayit> sonuc;
     const auto& img = pe.img;
     size_t q = 0;
     while (q + 12 <= img.size()) {
-        uint32_t nm = r32(img.data() + q);
-        if (nm && nm < img.size()) {
+        // bu konumdan zincir dene
+        size_t p = q;
+        std::vector<ImportKayit> zincir;
+        while (p + 12 <= img.size()) {
+            uint32_t nm = r32(img.data() + p);
+            if (!nm || nm >= img.size()) break;
             std::string ad;
-            if (string_coz(img, nm, key, ad)) {
-                ImportKayit k;
-                k.konum = uint32_t(q);
-                k.ad = ad;
-                k.v1 = r32(img.data() + q + 4);
-                k.v2 = r32(img.data() + q + 8);
-                sonuc.push_back(k);
-                q += 12;
-                continue;
-            }
+            if (!string_coz(img, nm, key, ad)) break;
+            ImportKayit k;
+            k.konum = uint32_t(p);
+            k.ad = ad;
+            k.v1 = r32(img.data() + p + 4);
+            k.v2 = r32(img.data() + p + 8);
+            zincir.push_back(k);
+            p += 12;
         }
-        q++;
+        if (zincir.size() >= 3) {
+            for (auto& k : zincir) sonuc.push_back(k);
+            q = p;
+        } else {
+            q++;
+        }
     }
     return sonuc;
 }
