@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <cstdlib>
 
 namespace tc {
 
@@ -171,6 +172,12 @@ UnpackSonuc unpack_tam(const PE& pe, const UnpackTablo& tablo,
     if (!tablo.tablo_off || tablo.girisler.empty()) {
         s.rapor.push_back("PACKER_INFO yok — unpack_tam uygulanamaz");
         return s;
+    }
+    // V336: hedef dizin yoksa oluştur (önceki davranış: sessiz "yazılamadı")
+    if (!hedef_dizin.empty()) {
+        std::string komut = "mkdir -p '" + hedef_dizin + "'";
+        if (system(komut.c_str()) != 0)
+            s.rapor.push_back("UYARI: dizin olusturulamadi: " + hedef_dizin);
     }
     // orijinal yükle (bölüm referansları)
     PE ope; std::string ohata;

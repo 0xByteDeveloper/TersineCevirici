@@ -1,4 +1,5 @@
-// tersinecevirici.cpp — main: 6 alt komut (girisler | mutasyon | vmtrace | oracle | etiket | avtuzak)
+// tersinecevirici.cpp — main: 10 alt komut (teshis | girisler | mutasyon | vmtrace |
+// oracle | etiket | avtuzak | avtuzak-loader | unpack | unpack-tam) — V336
 #include "tc_pe.hpp"
 #include "tc_disasm.hpp"
 #include "tc_mutasyon.hpp"
@@ -6,6 +7,7 @@
 #include "tc_oracle.hpp"
 #include "tc_etiket.hpp"
 #include "tc_unpack.hpp"
+#include "tc_teshis.hpp"
 #include <fstream>
 #include "tc_kurulum.hpp"
 #include <cstdio>
@@ -275,19 +277,102 @@ static int cmd_unpack_tam(int argc, char** argv) {
     return 0;
 }
 
+// ---- V336: otomatik koruma teşhisi (§1 tablosunun kodu) ----
+static int cmd_teshis(int argc, char** argv) {
+    if (argc < 3) {
+        fprintf(stderr, "kullanim: teshis <korunmus.exe> [fonksiyon-rva-hex]\n"
+                        "  ornek: teshis Test_64_mutation.vmp.exe 14C0\n"
+                        "  rva verilmezse 0x14C0 (Test_64 ailesi varsayilan)\n");
+        return 2;
+    }
+    PE pe; std::string hata;
+    if (!pe_yukle(argv[2], pe, hata)) { fprintf(stderr, "%s\n", hata.c_str()); return 1; }
+    uint64_t rva = argc > 3 ? adres_oku(argv[3]) : 0x14C0;
+    if (!rva) rva = 0x14C0;
+    TeshisRaporu r = teshis_yap(pe, rva);
+    printf("KORUMA TESHISI — fonksiyon RVA 0x%llX (V336, TersineCevirici.md §1)\n",
+           (unsigned long long)r.giris_va);
+    cizgi();
+    if (r.ilk_bayt)
+        printf("ilk bayt: 0x%02X%s\n", r.ilk_bayt,
+               r.jmp_hedefi ? "" : "");
+    if (r.jmp_hedefi)
+        printf("E9 hedefi: 0x%llX\n", (unsigned long long)r.jmp_hedefi);
+    printf("RSZ=0 kalibi: %s | props/PACKER_INFO: %s\n",
+           r.rsz0_kalibi ? "EVET" : "hayir", r.props_var ? "EVET" : "hayir");
+    cizgi();
+    for (auto& b : r.bulgular) {
+        printf(">>> %s\n    kanit: %s\n    oneri: %s\n",
+               b.koruma.c_str(), b.kanit.c_str(), b.oneri.c_str());
+    }
+    return 0;
+}
+
+// ---- V336: YÖN 1 — unpack-tam'ın decode ettiği loader akışında AV-tuzak taraması ----
+static int cmd_avtuzak_loader(int argc, char** argv) {
+    if (argc < 4) {
+        fprintf(stderr, "kullanim: avtuzak-loader <korumali.exe> <orijinal.exe> [bolum-adi]\n"
+                        "  ornek: avtuzak-loader Test_64_ALL.vmp.exe Test_64.exe .FYP\n"
+                        "  bolum-adi verilmezse 5. LZMA akisinin (loader/vmp) decode'u taranir\n");
+        return 2;
+    }
+    PE pe; std::string hata;
+    if (!pe_yukle(argv[2], pe, hata)) { fprintf(stderr, "%s\n", hata.c_str()); return 1; }
+    UnpackTablo T = unpack_tablo_bul(pe);
+    if (!T.tablo_off) { printf("PACKER_INFO bulunamadi — pack kapali.\n"); return 1; }
+    std::string dizin = "/tmp/tc_avtuzak";   // decode çıktıları buraya (sonra okunur)
+    UnpackSonuc s = unpack_tam(pe, T, argv[3], dizin);
+    for (const auto& satir : s.rapor) printf("%s\n", satir.c_str());
+    // decode edilen loader akisini bul (son akis genelde vmp/FYP bölümüne gider)
+    std::string hedef_ad = argc > 4 ? argv[4] : "";
+    std::string dosya;
+    for (const auto& d : s.dosyalar) {
+        bool es = hedef_ad.empty() ? d.find("vmp") != std::string::npos ||
+                                     d.find("FYP") != std::string::npos
+                                   : d.find(hedef_ad) != std::string::npos;
+        if (es) { dosya = d; break; }
+    }
+    if (dosya.empty() && !s.dosyalar.empty()) dosya = s.dosyalar.back();
+    if (dosya.empty()) { printf("decode akisi bulunamadi\n"); return 1; }
+    printf("\nloader akisi: %s\n", dosya.c_str());
+    cizgi();
+    // dosyayı oku + bölüm VA'sı (unpack çıktı adında RVA taşır ise onu kullan)
+    FILE* f = fopen(dosya.c_str(), "rb");
+    if (!f) { printf("acilamadi: %s\n", dosya.c_str()); return 1; }
+    std::vector<uint8_t> veri;
+    uint8_t buf[65536]; size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) veri.insert(veri.end(), buf, buf + n);
+    fclose(f);
+    // akisin Dst RVA'si (tablodan): dosya adindan cikaramazsak son girisin dst'si
+    uint64_t bolum_va = 0;
+    if (!T.girisler.empty()) {
+        uint32_t dst = T.girisler.back().dst;
+        bolum_va = pe.base + dst;
+    }
+    auto rapor = av_tuzak_loader_tara(veri, bolum_va);
+    for (auto& satir : rapor) printf("%s\n", satir.c_str());
+    printf("\nNOT: adaylar statik; kesin tuzak = K == idx*scale → EA=base kontrolu (V327).\n");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
-        printf("TersineCevirici — VMProtect 3.9.4 devirtualizer (V324-V327 zinciri, C++)\n"
+        printf("TersineCevirici — VMProtect 3.9.4 devirtualizer (V324-V336 zinciri, C++)\n"
                "Alt komutlar:\n"
+               "  teshis  <korunmus.exe> [fonksiyon-rva]     otomatik koruma teshisi + oneri (V336)\n"
                "  girisler <orijinal.exe> <korunmus1.exe> [...]   0x14C0 jmp hedef envanteri\n"
                "  mutasyon <korunmus.exe> [giris-va]              birebir cikarim + junk raporu\n"
                "  vmtrace  <korumali.exe> <orijinal.exe> [yon]    VM iz + oracle karsilastirma\n"
                "  oracle  <orijinal.exe> [yon]                    dogal referans olay dizisi\n"
                "  etiket  <korumali.exe> <giris-va> [yon]         komut->tip semantik etiketleme (V327)\n"
                "  avtuzak <korumali.exe> <bas-va> <son-va>        AV-tuzak aday taramasi (V327 ALL teshisi)\n"
-               "  unpack  <korumali.exe> [bilinen-dll]           ALL statik dekompres tablosu + import key (V333)\n");
+               "  avtuzak-loader <korumali.exe> <orijinal.exe> [.bolum]  decode loader akisinda avtuzak (V336 YON-1)\n"
+               "  unpack  <korumali.exe> [bilinen-dll]           ALL statik dekompres tablosu + import key (V333)\n"
+               "  unpack-tam <korumali.exe> <orijinal.exe> [dizin]  tam unpack + OEP 32/32 (V335)\n");
         return 0;
     }
+    if (!strcmp(argv[1], "teshis"))           return cmd_teshis(argc, argv);
+    if (!strcmp(argv[1], "avtuzak-loader"))   return cmd_avtuzak_loader(argc, argv);
     if (!strcmp(argv[1], "girisler"))  return cmd_girisler(argc, argv);
     if (!strcmp(argv[1], "mutasyon"))  return cmd_mutasyon(argc, argv);
     if (!strcmp(argv[1], "vmtrace"))   return cmd_vmtrace(argc, argv);

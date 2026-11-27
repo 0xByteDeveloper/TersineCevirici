@@ -1,9 +1,14 @@
 # TersineCevirici.md — VMProtect Tersine Mühendislik Bilgi Temeli (TAM KAPSAM)
 
-**Sürüm:** 2.0 (V335, 2026-11-27) · **Kapsam:** V312–V334 tur zincirinin öğrettiği HER ŞEY
+**Sürüm:** 3.0 (V336, 2026-11-27) · **Kapsam:** V301–V336 tur zincirinin öğrettiği HER ŞEY —
+118 mesajlık tam sohbet dökümü (sohbet_arşivi/) madde madde taranarak hazırlanmıştır.
 **Amaç:** Bu doküman, TersineCevirici projesinin (github.com/0xByteDeveloper/TersineCevirici)
 bilgi tabanıdır — hangi yöntem hangi korumayı nasıl çözer, hangi tuzaklar var, neyi
 YAPMAMALI, her bulgunun kanıtı nerede. Yeni bir tur bu dokümandan başlamalıdır.
+
+**v3.0'da yeni:** §14 VMProtect ÜRETİM MEKANİZMASI (kaynak dosya-satırı seviyesinde),
+§15 KOMUT KORPUSU + talimat seti detayları, §16 ARAÇ KURULUM REÇETELERİ (wine/X/Ghidra),
+§17 ÖLÇÜM YÖNTEMLERİ BÜTÜNÜ, §18 VARYANT BOYUT VERİTABANI (tam sayı tablolar).
 
 ---
 
@@ -400,3 +405,210 @@ tersinecevirici.cpp — CLI: girisler mutasyon vmtrace oracle etiket avtuzak unp
 4. **VEH değerini gerçek Windows'ta dökmek** — ALL koşu-anı kızlağının son parçası
 5. **Zincir otomasyonu** — unpack çıktısından otomatik devirt girişi (e8/e9 hedeflerini
    vmtrace'e verme)
+
+---
+
+# BÖLÜM B — V336 DERİNLEVİ EKLER (118 mesajlık tam döküm taramasından)
+
+## 14) VMPROTECT ÜRETİM MEKANİZMASI — kaynak dosya-satırı seviyesinde (3.5.1 ağacından)
+
+**Kaynak ağaçlar:** `universalObfusPublicSrc` (3.5.1, zip'te `_YAMALAR/` ile) + Allver
+rar'ında `VMProtect 3.5.1 [Source Code]` tam ağacı (1197 dosya). Motor ~117.000 satır;
+Linux-native konsol ikilisi `VMProtectCon` 19,9 MB (g++ 14.2).
+
+### 14.1 Proje (.vmp) XML formatı
+```xml
+<Document Version="2">                              ← Version="2" ŞART (V335 pack dersi)
+  <Protection InputFileName="..." OutputFileName="..." Options="<bitmask>">
+    <Procedure MapAddress="MovePlayer" Options="0" Complexity="60"
+               IncludedInCompilation="true"/>       ← MapAddress = EXPORT ADI (hex adres DEĞİL!)
+    <Messages/>
+  </Protection>
+</Document>
+```
+- `OutputFileName` eksikse pack SESSİZ çalışmaz (V335); `MapAddress`'te hex yazarsan
+  aynı-MD5 klonlar üretirsin (V329 hatası); `<Document>` Version'suz olamaz.
+
+### 14.2 CompilationType + ProjectOption bitleri (core/core.cc, runtime/common.h)
+```
+CompilationType: 0=Virtualization  1=Mutation  2=Ultra (mutation+virtualization)
+ProjectOption:   cpImportProtection=0x200  cpMemoryProtection=0x1000
+                 cpStripFixups=32768  ShadowStack=0x80000 (Options="524288")
+ALL konfigürasyonu: Options=0x513C8
+```
+
+### 14.3 Determinizm hatası (V312'nin en kritik keşfi)
+`Core::Compile` içinde `rand_seed` Lua betiği ÇALIŞMADAN ÖNCE yakalanıyordu →
+`setRandomSeed(7)` etkisiz, saat tohumu → aynı betik 3 kez = 3 farklı çıktı. Düzeltme:
+betik SONRASI yeniden tohumlama. Sonuç: 3/3 bayt-özdeş (SHA-256 aynı).
+**Gizli tuzak:** `saveProject` Lua betiğini XML'e GÖMER (`<Script>`) → yeniden derlemede
+gömülü betik tekrar koşar → "yeniden yükleme" testleri kirli kanıttı. Temiz kanıt:
+betiksiz MapAddress deneyi (1.642.496 ≠ 1.651.712 B).
+
+### 14.4 Sanallaştırma motoru (kaynak mimari)
+- Komutlar `CompileOperand` + `AddVMCommand` ile derlenir; operandlar VM yığına
+  `PrepareValues`/`ReturnValues` ile itilir/geri yazılır; değerler `ValueCryptor` ile
+  şifrelenir.
+- **95 komut tipi sanallaşabilir; hiçbiri SSE/AVX değil.** Bilinmeyen tipler
+  `IntelFunction::CompileToVM` beyaz listesinde (intel.cc:18263–18316) `default →
+  ltNative` (yerel geçit). Bu yüzden MOVD/MOVQ ve XMM'li komutlar VM'e girmez (V315
+  ölçümü: yerel=1, yani geçit). VEX.vvvv gerçek operand DEĞİLDİR — `vex_operand_` içinde
+  bekler; BMI2 3-operand sanallaştırması için ayrı yol yazıldı.
+- **Instances = aynı VM'in N kopyası** (i1=75.264 B → i10=589.312 B); **VM Version
+  "VMProtect 2.X" = daha küçük bytecode** (156–159 KB vs 589 KB).
+- **Complexity = birleşik işleyici OLASILIĞI** (resmî Help/en.qch: "probability of
+  creating complex handlers") — 3.5.1'de mekanizma VAR (`IntelCommand::Merge`
+  intel.cc:12703–12762 + füzyon döngüsü `CommandBlock::Compile` processors.cc:1141)
+  ama olasılık kapısı YOKTU → yama: `rand() % 100 < etkin_complexity` kapısı.
+- **VM yazmaç modeli: yalnız GPR + bayraklar** (XMM yok) — 111. yama noktasına kadar
+  kayıtsız dalda SABİT VM yazmaçları (ESI/EBP/EDI/R11) kullanılıyordu = devirt kaldıracı;
+  yama sonrası her kopya kendi pcode/stack/jmp yazmaçlarını seçer (2 tohum = tamamen
+  farklı .vmp akışı).
+- **Mutasyon deseni:** `jmp xxxx → push xxxx; ret` dönüşümü (intel.cc ~16324) — CET
+  gölge yığınıyla ÇAKIŞIR; Shadow Stack açıkken bu dönüşüm kapatılır (7/11/13 ölçüm:
+  push;ret 1 → 0).
+
+### 14.5 Yamalı konsol anahtarları + Lua API
+```
+-vm <0|1>  VM 2.X       -vi <1-10> instances      -vc <0-100> complexity
+-rs <seed> tohum         -ss <0|1>  Shadow Stack   (geçersiz değerler reddedilir)
+Lua: vmprotect.core(), setVMComplexity, setVMInstances (11 reddi), setRandomSeed,
+     setShadowStackCompatible, fonksiyon.complexity (101 reddi), saveProject
+     — listeler 1-TABANLI indeksli (item(0) sınır dışı!)
+```
+
+### 14.6 Derleme zinciri (Linux-native)
+`lin_common.mak`: `-DNDEBUG -fno-stack-protector -fno-builtin -fPIC`, C++ `-std=c++11`,
+link `-no-pie`; invar `-DSCI_LEXER -DSCI_NAMESPACE`. Tek g++ uyumluluk düzeltmesi:
+pe.h'deki `COMIMAGE_FLAGS_NATIVE_ENTRYPOINT`'in dotnet.h enumuyla çakışması. Runtime
+modülleri (win_runtime*.dll.inc, lin_runtime*.so.inc) kaynakta gömülü. -j8 bellek
+limiti → -j2. Başlık-duyarsız önbellek hatası: başlık değişince 10 eski nesne
+derlenmedi → önbellek en-yeni-başlık-zamanına bağlandı.
+
+## 15) KOMUT KORPUSU — talimat seti detayları (V314/V315)
+
+**Doğru harita (GNU as/objdump ile doğrulanmış — ilk yamada 2 hata vardı):**
+```
+SHLX = 0F38.F7/66   SHRX = 0F38.F7/F2   SARX = 0F38.F7/F3   (pp 10=F3=SARX, 11=F2=SHRX!)
+RORX = 0F3A.F0      VPMASKMOV-store = 0F38.8E   VPBLENDD = 0F3A.02 (0F38.02'den TAŞINDI)
+```
+- **case 0x02 çakışması:** 0F38.02'de PHADDD vardı; 3.5.1 VEX'li 0F38.02'yi PHADDD
+  sanıyordu — resmî 3.7.3 changelog "VPBLENDD disassembling" kaydının GERÇEK NEDENİ.
+- **V314'ün en kritiği — test PE şablonu hatası:** `movabs r11,body; jmp r11` dolaylı
+  atlaması sınanan komutu FONKSİYON DIŞINDA bıraktı → çözümleyici 6 komut gördü →
+  **185/185 "TAMAM" yanlış kanıttı** (komutlara hiç dokunulmamıştı!). Düzeltme: doğrusal
+  şablon + "ret'e ulaşıyor mu" denetimi. DERS: testin kendisi test edilmeden ölçüm yok.
+- **El yazımı baytlar neden yanlıştı:** VEX harita baytları, BMI2 vvvv, RORX vvvv,
+  roundsd 2.5-bayt düzeni; INSERTPS/EXTRACTPS immediate bitleri (EXTRACTPS seçici
+  imm8[1:0]; INSERTPS kaynak imm8[7:6], hedef imm8[5:4], zmask imm8[1:0]); VPMASKMOV
+  yüklemede maskeli şeritler SIFIRLANIR (korunmaz) — hepsi yerel CPU'da ölçülerek düzeltildi.
+- Komut tipi numaraları (yamalı çözümleyici): SHLX=579, SHRX=578, SARX=577, RORX=580,
+  VPBLENDD=585, VPMASKMOVD/Q=583/584, MOVD t=178.
+- Komut başına TEK test PE (GNU as+ld; `func` yalnız komut DOĞRU hesaplarsa 42 döndürür):
+  37 test (1 düz denetim + 8 MOVD/MOVQ + 28 yeni). Metrikler: rc=42 (semantik) +
+  **yerel sayısı** (0 = sanallaştırıldı, >0 = yerel geçit). Evrim: taban 9/37 →
+  V314b 37/37 derlendi → V315 BMI2 10/10 yerel=0 (GERÇEK VM).
+
+## 16) ARAÇ KURULUM REÇETELERİ (kanıtlanmış kombinasyonlar)
+
+### 16.1 wine (GUI'yi debugger-detection'sız açan TEK güvenilir build)
+- **Kron4ek wine-10.0-amd64-wow64.tar.xz** (65 MB) — VMProtect GUI sorunsuz.
+- wine-11.22-amd64: wineboot core dump; wine-11.22-wow64: açılışta "debugger found";
+  wine-9.0-amd64: koşum OK ama uzun koşuda page fault.
+- Debian wine64 debs + `dpkg -x` (root'suz): builtin user32/kernel32 c0000135 yüklenemedi
+  (3 konfigürasyonda çözülemedi) → terk; nls sorunu `l_intl.nls` sabit yol araması
+  LD_PRELOAD kök-çeviriciyle (v312_wine_kok_shim.c) aşıldı.
+- Wine Mono sihirbazı: registry `[Software\\Wine\\DllOverrides]` mscoree/mshtml/winedbg="".
+- zlib1.dll 32-bit tuzağı: kurulum i686 kopyalamış (c000007b) → 64-bit mingw zlib
+  prefix system32'ye (builtin dizini reddeder: "not a builtin, ignoring").
+
+### 16.2 GUI otomasyonu (Xvfb zinciri)
+```
+Xvfb :99 1280x1024x24 → wm.py (ctypes mini-WM: WM'siz Xvfb'de wine pencereleri
+map OLMAZ!) → xkey (XTEST klavye; otomatik Shift katmanı: "colon" → Shift+;)
+→ xdotool (libXtst6 deb'i ŞART — eksikse xdotool SESSİZCE hiç çalışmaz, F9 gitmez!)
+→ tesseract OCR + python-xlib ekran görüntüsü
+```
+- F5=Execute (oyun başlar!), F9=Compile — mainwindow.cc kısayol setinden doğrulandı.
+- wineconsole odağı çalar → oyun penceresi `windowunmap` edilince derleme tetiklendi.
+- Confirmation diyaloğuna **Escape** (Return oyunu başlatır).
+- XSetInputFocus BadMatch → hata yok-sayan handler; kök odaklı yazım gitmez → BackSpace×60.
+
+### 16.3 Analiz araçları
+- **rea 6.10.1** (npm): inspect-binary-hardening/compare-artifacts/audit-release-exposure
+  çalışır; decompiler native motor ister. **Ghidra 12.2** (570MB) + **JDK 25** (Temurin).
+- **unrar-nonfree 7.3.2** (Debian pool/non-free; unrar-free RAR5 ÇÖZEMEZ); Python rarfile.
+- **innoextract** + libboost-program-options (VMProtectDemo.exe 177MB açılımı).
+- **pefile (pip)**: RVA→dosya-ofset dönüşümü el yapısı parser'da eksikti (+24/+28/+36
+  yanlış alarmları).
+- Qt Help .qch = SQLite → `v312_qch_cek.py` FileDataTable'dan HTML (resmî dokümantasyon!).
+- vmpsoft.com sertifika zinciri: Let's Encrypt kökleri CA paketine eklenerek (TLS
+  denetimi KAPATILMADAN) çözüldü.
+- **32-bit PE bu sandbox'ta KOŞMAZ** (seccomp; WOW64 xtajit yok, Kron4ek multi-lib
+  SIGSYS, Debian chroot SIGSYS) — 3.3.1 x86 bu yüzden 0/15.
+
+## 17) ÖLÇÜM YÖNTEMLERİ BÜTÜNÜ
+
+1. **E2E parite:** FIFO'dan hamle dizisi (d,d,d,s,w,q) → skor/can/yem/RC karşılaştırma
+   (V301: Skor 40 / Can 3 / Yem 78 / RC=0, skor geçişleri 20→30→40 dahil birebir).
+2. **Canlı RAM analizi:** umvpqt --pid + CE-tarzı /proc/PID/mem UTF-8+UTF-16 tarama
+   (vsyscall taşma filtresiyle). Self-protect farkının kanıtı: menü metinleri RAM'de
+   (File×698) ama Qt meta 0 (QMainWindow sıfır; tek sınıf kaydı metaobject=0x0).
+3. **Crash-pencere yakalama:** self-protected exe'ler wine'da unpack'te page fault →
+   0,5 sn döngüyle winedbg askısında QObject sayımı (3.9.6: 292; normal koşumda 3–36).
+4. **Determinizm:** aynı tohum 3 koşu SHA-256; HANG tespiti: 320×60 "Saving... %"
+   diyaloğu + 50 sn erken tespit + yeniden başlatma.
+5. **Dedektör doğrulaması:** MVP_GOD_SSS_TIER_PACKER_FINDER v4, 407/407 kör test;
+   K1 bayrak deseni 0x68000020 / K2 PURE sarmalayıcı 2048/2032 B (3.5.1'de 216) /
+   K4 408-profil. Dedektör çıktısı GÖSTERGE'dir, kanıt değil.
+6. **en.lng anahtar-diff:** sürüm eşiği tespiti (3.6+ Assemblies/LockToHWID,
+   3.8.1+ Complexity/Instances −Taggant, 3.8.4+ ShadowStack, 3.8.7+ StackTraceDecoder;
+   3.0.9–3.6.0'da Complexity anahtarı HİÇ yok — 3.5.1 GUI kodunda "complexity" 0 kez).
+
+## 18) VARYANT BOYUT VERİTABANI (tam sayılar — Test_64.exe 12.800 B girdi)
+
+| Konfig | Boyut |
+|---|---|
+| Taban fn1-virt (i10 default) | 589.312 B |
+| Instances i1→i10 | 75.264 → 592.384 B |
+| VM Complexity c0→c100 | 585–590 KB → 1.623.552 B (%50=1.150.464) |
+| VM 2.X | 156.160 / 158.720 / 159.232 B |
+| Fonksiyon Complexity %50/%100 | 611.840 / 612.352 B (zayıf!) |
+| Füzyon fc0/fc50/fc100 | 586.240 / 603.136 / 614.400 B |
+| Konsol -vc100 -rs7 | 1.651.712 B (3/3 SHA-256 aynı) |
+| Lua betik yolu | 1.645.056 B; betiksiz MapAddress-60: 1.642.496 B |
+| Tüm seçenekler açık | 18,55 MB (wine'da koşmadı) |
+| Resmî 3.9.6 GUI (V301, 6 prosedür) | 2,74 MB, .dne entropi 7,07 |
+| fn-virt / fn-mutation / fn0-pack (V309) | 2.539.008 / 14.848 / 4.088.165 B |
+| ALL 3.9.4 orijinal | 51 MB (.cqM 31,5 MB + .FYP 19,5 MB) |
+| ALL 3.5.1-motor | 1.245.184 B |
+| vi1 c100 | 196 KB → 1,93 MB (18×) |
+| vi10 (10 kopya) | 18,86 MB; tam-ayar vi10+c50: 15,8 MB rc=0 |
+
+**V309 matrisi (15 varyant × 11 sürüm, 140/165):** 3.0.9/3.2.0 15/15 kusursuz;
+3.4.0/3.6.0 10/15 (5 HANG: fn-virt, fn-virt-all, fn0-import, fn0-stripreloc, fn0-vmtools
+— wine'a özgü); 3.3.1 0/15 (x86); 3.8.1/3.8.4 12/15; 3.9.6 7/15; 3.9.4 6/15 (3.9.x
+wine'da dengesiz — Windows'ta farklı olabilir).
+
+## 19) RESMÎ SÜRÜM ENVANTERİ (universalAllver.rar: MD5 f98140bb208579efae4709ab395f1c96, 500 MB)
+
+- 12 VMProtect.exe (gerçek 11 benzersiz; 3.9.4 iki klasör = aynı MD5 24576e5e…):
+  Lite 3.10.4/3.8.7, Pro 3.8.1/3.9.6, Ultimate 3.0.9/3.2.0/3.3.1(x86)/3.4.0/3.6.0/
+  3.8.4/3.9.4. 3.9.4 paketinde konsol ikilisi YOK (yalnız GUI) + Help/en.qch.
+- **Paketleme evrimi (en çarpıcı bulgu):** 3.0.9→3.4.0 `.UPX0/.UPX1` taşır (entropi ~7,9)
+  ama `upx -d` "not packed by UPX" der → **kamuflaj** (paketleyici VMProtect'ın kendisi);
+  3.6.0+ UPX bırakıldı → ~30 MB rastgele adlı VM bölümleri; 3.6.0+ sürekli: `.qtmetad`
+  VAR (Qt statik) ama orijinal bölümler diskten silinmiş (rawsize=0).
+- VM bölüm adları sürüm DEĞİL proje-seçeneği farkı: Ultimate 3.9.4 çıktısı düz `.vmp0`
+  (Metin2 kanıtı), Pro 3.9.6 çıktısı rastgele `.dne` (entropi 7,07).
+- 3.11 demo: VMProtect.exe 47,4–49,7 MB + VMProtect_Con.exe + SDK'lar (Rust/Go/Lazarus)
+  + 5 dil (de/en/fr/ru/zh); 3.9.6→3.11 +6 UI anahtarı (Theme/Dark/Light).
+- QObject canlı sayımlar: 3.0.9=317, 3.8.1=293, 3.8.4=40, 3.9.6=36, 3.8.7=32,
+  3.9.4=30, 3.4.0=27, 3.2.0=4, 3.10.4=3, 3.6.0=3.
+
+## 20) SÜRÜM TEŞHİS ARACI REÇETESİ (Packer Finder profilleri)
+
+K1: bölüm bayrak deseni 0x68000020 (resmî K1 birebir) · K2: PURE sarmalayıcı boyutu
+2048/2032 B (3.5.1 tabanı 216 B → V319 yamasıyla parite) · K4: 408-profil.
+Yamalı motor 3.5.1 olarak ALGILANMAYI bıraktı (3.6.0–3.8.7 bandına düştü) — amaç
+"3.9.4" etiketi değil, resmî profil eşleşmesi.
