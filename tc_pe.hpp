@@ -17,6 +17,7 @@ struct Bolum {
 struct PE {
     uint64_t    base = 0;   // ImageBase (0x140000000)
     std::vector<uint8_t> img;   // belleğe serilmiş görüntü (img[RVA])
+    std::vector<uint8_t> ham;  // V335: ham dosya içeriği (LZMA akışları buradadır)
     std::vector<Bolum>   bolumler;
     uint32_t    boyut = 0;  // SizeOfImage
 

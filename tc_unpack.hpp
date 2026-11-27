@@ -35,4 +35,16 @@ uint32_t unpack_key_bul(const PE& pe, const std::string& bilinen_dll_adi, uint32
 // Import tablosu taraması: [Name_RVA][V1][V2] 12-bayt kayıtlar
 std::vector<ImportKayit> unpack_import_tara(const PE& pe, uint32_t key);
 
+// V335 — tam unpack zinciri: 5 LZMA akışını çözer + OEP doğrular + rapor üretir.
+// orijinal_yol: karşılaştırma referansı (boşsa karşılaştırma atlanır)
+// hedef_dizin: decode çıktıları buraya yazılır ("" = yazma, sadece rapor)
+struct UnpackSonuc {
+    bool tamam = false;
+    std::vector<std::string> rapor;    // satır satır rapor
+    std::vector<std::string> dosyalar; // yazılan dosya adları
+};
+UnpackSonuc unpack_tam(const PE& pe, const UnpackTablo& tablo,
+                       const std::string& orijinal_yol,
+                       const std::string& hedef_dizin);
+
 } // namespace tc

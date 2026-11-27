@@ -11,8 +11,10 @@
 // bölümleri geri inşa eder. Key araması: en uzun DLL adı biliniyorsa otomatik.
 #include "tc_pe.hpp"
 #include "tc_unpack.hpp"
+#include "tc_lzma.hpp"
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 
 namespace tc {
 
@@ -147,6 +149,119 @@ std::vector<ImportKayit> unpack_import_tara(const PE& pe, uint32_t key) {
         }
     }
     return sonuc;
+}
+
+} // namespace tc
+
+// ==================== V335: TAM UNPACK ZİNCİRİ ====================
+// 5 LZMA akışını çözer, orijinal bölümlerle karşılaştırır, OEP doğrular.
+namespace tc {
+
+static bool dosya_yaz(const std::string& yol, const std::vector<uint8_t>& v) {
+    std::ofstream f(yol, std::ios::binary);
+    if (!f) return false;
+    f.write((const char*)v.data(), (std::streamsize)v.size());
+    return f.good();
+}
+
+UnpackSonuc unpack_tam(const PE& pe, const UnpackTablo& tablo,
+                       const std::string& orijinal_yol,
+                       const std::string& hedef_dizin) {
+    UnpackSonuc s;
+    if (!tablo.tablo_off || tablo.girisler.empty()) {
+        s.rapor.push_back("PACKER_INFO yok — unpack_tam uygulanamaz");
+        return s;
+    }
+    // orijinal yükle (bölüm referansları)
+    PE ope; std::string ohata;
+    bool orijinal_var = false;
+    if (!orijinal_yol.empty() && pe_yukle(orijinal_yol, ope, ohata))
+        orijinal_var = true;
+    else if (!orijinal_yol.empty())
+        s.rapor.push_back("UYARI: orijinal yuklenemedi (" + ohata + ") — karsilastirma yok");
+
+    char satir[512];
+    for (const auto& g : tablo.girisler) {
+        // bölüm adı + hedef boyut
+        std::string bad;
+        uint32_t hedef_vsz = 0;
+        for (const auto& b : pe.bolumler)
+            if (g.dst == b.va) { bad = b.ad; hedef_vsz = b.vsz; break; }
+        // akış ofseti (RVA-uzayında zaten pe.img? hayır — pe.img dosya içeriği;
+        // tc_unpack tablo araması pe.img ÜZERİNDEN RVA-uzayı varsayımıyla yapılıyordu.
+        // Gerçek akış konumu: rva2off ile dosya ofsetine çevir.
+        uint32_t akis_off = rva2off(pe.bolumler, g.src);
+        if (!akis_off || akis_off >= pe.ham.size()) {
+            snprintf(satir, sizeof satir, "  %-8s Src=0x%X dosyada degil — atlandi", bad.c_str(), g.src);
+            s.rapor.push_back(satir);
+            continue;
+        }
+        std::vector<uint8_t> veri = lzma1_coz(pe.ham.data() + akis_off,
+                                              pe.ham.size() - akis_off, hedef_vsz);
+        if (veri.empty()) {
+            snprintf(satir, sizeof satir, "  %-8s LZMA HATA (akis @0x%X)", bad.c_str(), akis_off);
+            s.rapor.push_back(satir);
+            continue;
+        }
+        // karşılaştır
+        if (orijinal_var) {
+            const Bolum* ob = nullptr;
+            for (const auto& b : ope.bolumler) if (b.ad == bad) { ob = &b; break; }
+            if (ob && ob->rsz) {
+                size_t n = veri.size() < ob->rsz ? veri.size() : ob->rsz;
+                size_t es = 0;
+                const uint8_t* oref = (ob->ra + n <= ope.ham.size()) ? ope.ham.data() + ob->ra
+                                  : (ob->ra + n <= ope.img.size() ? ope.img.data() + ob->ra : nullptr);
+                if (oref) { for (size_t i = 0; i < n; i++) if (veri[i] == oref[i]) es++; }
+                snprintf(satir, sizeof satir,
+                         "  %-8s %zu bayt decode — orijinalle %zu/%zu (%%%.1f) birebir",
+                         bad.c_str(), veri.size(), es, n, n ? 100.0 * es / n : 0.0);
+                s.rapor.push_back(satir);
+                // OEP kontrolü: .text ise orijinal EP baytları (3.5.1/3.9.4: 0x13B0)
+                if (bad == ".text") {
+                    uint32_t oep = 0;
+                    // orijinal PE'nin EP RVA'sı
+                    if (ope.img.size() > 0x40) {
+                        uint32_t pe_off = r32(ope.img.data() + 0x3C);
+                        if (pe_off + 0x28 < ope.img.size())
+                            oep = r32(ope.img.data() + pe_off + 0x28);
+                    }
+                    if (oep) {
+                        uint32_t idx = oep - g.dst;   // g.dst = .text VA'sı
+                        if (idx < veri.size() && idx + 32 <= veri.size() &&
+                            ob->ra + idx + 32 <= ope.img.size()) {
+                            size_t e32 = 0;
+                            const uint8_t* oref2 = (ob->ra + idx + 32 <= ope.ham.size()) ? ope.ham.data() + ob->ra + idx : nullptr;
+                            if (oref2) { for (int i = 0; i < 32; i++) if (veri[idx + i] == oref2[i]) e32++; }
+                            snprintf(satir, sizeof satir,
+                                     "  OEP 0x%X cevresi: %zu/32 birebir %s",
+                                     oep, e32, e32 == 32 ? "(ORIJINAL GIRIS KODU DURUYOR)" : "");
+                            s.rapor.push_back(satir);
+                            if (e32 == 32) s.tamam = true;
+                        }
+                    }
+                }
+            } else {
+                snprintf(satir, sizeof satir, "  %-8s %zu bayt decode (orijinalde yok — VM bolgesi)",
+                         bad.c_str(), veri.size());
+                s.rapor.push_back(satir);
+            }
+        } else {
+            snprintf(satir, sizeof satir, "  %-8s %zu bayt decode", bad.c_str(), veri.size());
+            s.rapor.push_back(satir);
+        }
+        // yaz
+        if (!hedef_dizin.empty()) {
+            std::string ad = hedef_dizin + "/cozulen_" +
+                             (bad.size() && bad[0] == '.' ? bad.substr(1) : bad) + ".bin";
+            if (dosya_yaz(ad, veri)) {
+                s.dosyalar.push_back(ad);
+            } else {
+                s.rapor.push_back("  UYARI: yazilamadi: " + ad);
+            }
+        }
+    }
+    return s;
 }
 
 } // namespace tc

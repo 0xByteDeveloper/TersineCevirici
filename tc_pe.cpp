@@ -1,6 +1,7 @@
 // tc_pe.cpp — PE64 yükleyici uygulaması (V322 pe_yukle birebir karşılığı)
 #include "tc_pe.hpp"
 #include <cstdio>
+#include <fstream>
 #include <cstring>
 
 namespace tc {
@@ -10,6 +11,11 @@ static uint32_t rd32(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v;
 static uint64_t rd64(const uint8_t* p) { uint64_t v; memcpy(&v, p, 8); return v; }
 
 bool pe_yukle(const std::string& yol, PE& pe, std::string& hata) {
+    // V335: ham dosya içeriği (LZMA akışları ham ofsetlerde durur; img RVA-uzayıdır)
+    {
+        std::ifstream f(yol, std::ios::binary);
+        if (f) pe.ham.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    }
     FILE* f = fopen(yol.c_str(), "rb");
     if (!f) { hata = "dosya acilamadi: " + yol; return false; }
     std::vector<uint8_t> d;

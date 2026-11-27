@@ -6,6 +6,7 @@
 #include "tc_oracle.hpp"
 #include "tc_etiket.hpp"
 #include "tc_unpack.hpp"
+#include <fstream>
 #include "tc_kurulum.hpp"
 #include <cstdio>
 #include <cstring>
@@ -253,6 +254,27 @@ static int cmd_unpack(int argc, char** argv) {
     return 0;
 }
 
+// V335: unpack-tam — 5 adımlı zinciri TEK KOMUTTA koşar: tablo + LZMA decode +
+// orijinal karşılaştırma + OEP doğrulama + dosya çıktısı.
+static int cmd_unpack_tam(int argc, char** argv) {
+    if (argc < 4) {
+        fprintf(stderr, "kullanim: unpack-tam <korumali.exe> <orijinal.exe> [cikti-dizini]\n"
+                        "  ornek: unpack-tam Test_64_ALL.vmp.exe Test_64.exe ./cikti\n");
+        return 2;
+    }
+    PE pe; std::string hata;
+    if (!pe_yukle(argv[2], pe, hata)) { fprintf(stderr, "%s\n", hata.c_str()); return 1; }
+    UnpackTablo T = unpack_tablo_bul(pe);
+    if (!T.tablo_off) { printf("PACKER_INFO bulunamadi — pack kapali olabilir.\n"); return 1; }
+    printf("PROPS RVA=0x%X  PACKER_INFO @0x%X  akis=%zu\n", T.props_rva, T.tablo_off, T.girisler.size());
+    std::string dizin = argc > 4 ? argv[4] : "";
+    UnpackSonuc s = unpack_tam(pe, T, argv[3], dizin);
+    for (const auto& satir : s.rapor) printf("%s\n", satir.c_str());
+    for (const auto& d : s.dosyalar) printf("YAZILDI: %s\n", d.c_str());
+    printf("\nSONUC: %s\n", s.tamam ? "OEP 32/32 — UNPACK DOGRULANDI" : "bkz rapor satirlari");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         printf("TersineCevirici — VMProtect 3.9.4 devirtualizer (V324-V327 zinciri, C++)\n"
@@ -273,6 +295,7 @@ int main(int argc, char** argv) {
     if (!strcmp(argv[1], "etiket"))    return cmd_etiket(argc, argv);
     if (!strcmp(argv[1], "avtuzak"))   return cmd_avtuzak(argc, argv);
     if (!strcmp(argv[1], "unpack"))    return cmd_unpack(argc, argv);
+    if (!strcmp(argv[1], "unpack-tam")) return cmd_unpack_tam(argc, argv);
     fprintf(stderr, "bilinmeyen alt komut: %s\n", argv[1]);
     return 2;
 }

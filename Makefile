@@ -9,15 +9,15 @@ CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter
 INCLUDES := -I$(CAPSTONE_DIR)/include -I$(UNICORN_DIR)/include
 LDFLAGS  := -L$(CAPSTONE_DIR)/lib -L$(UNICORN_DIR)/lib \
             -Wl,-rpath,$(CAPSTONE_DIR)/lib -Wl,-rpath,$(UNICORN_DIR)/lib \
-            -lcapstone -lunicorn
+            -lcapstone -lunicorn -llzma
 
-SRCS := tc_pe.cpp tc_disasm.cpp tc_mutasyon.cpp tc_vm.cpp tc_oracle.cpp tc_etiket.cpp tc_unpack.cpp tersinecevirici.cpp
+SRCS := tc_pe.cpp tc_disasm.cpp tc_mutasyon.cpp tc_vm.cpp tc_oracle.cpp tc_etiket.cpp tc_unpack.cpp tc_lzma.cpp tersinecevirici.cpp
 OBJS := $(SRCS:.cpp=.o)
-HDRS := tc_pe.hpp tc_disasm.hpp tc_mutasyon.hpp tc_vm.hpp tc_oracle.hpp tc_etiket.hpp tc_kurulum.hpp tc_unpack.hpp
+HDRS := tc_pe.hpp tc_disasm.hpp tc_mutasyon.hpp tc_vm.hpp tc_oracle.hpp tc_etiket.hpp tc_kurulum.hpp tc_unpack.hpp tc_lzma.hpp
 
 all: libtersinecevirici.a tersinecevirici
 
-libtersinecevirici.a: tc_pe.o tc_disasm.o tc_mutasyon.o tc_vm.o tc_oracle.o tc_etiket.o tc_unpack.o
+libtersinecevirici.a: tc_pe.o tc_disasm.o tc_mutasyon.o tc_vm.o tc_oracle.o tc_etiket.o tc_unpack.o tc_lzma.o
 	ar rcs $@ $^
 
 tersinecevirici: $(OBJS)
