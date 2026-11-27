@@ -22,6 +22,29 @@ oracle etiket avtuzak unpack`
 doğrulanır; "çalıştı" değil "değer-değer aynı" aranır; yapılamayan şey "çözülemedi" değil
 "çalışma-anı gerektirir" olarak işaretlenir.
 
+### 0.1) Köken ve kaynak repolar (sohbet kaydından — V335-g export)
+- **MovePlayer'ın 42-satırlık referans disassembly'si KULLANICININ VERDİĞİ listedir**
+  (chat 86. mesaj, x64dbg formatında: `push rsi; push rdi; sub rsp,28; mov eax,ecx;
+  dec eax; xor ecx,ecx; mov edi,0; cmp eax,3; ja +2C; lea rcx,[GameTick+1BB0] ...` —
+  GameTick+1BB0/+1BC0 = dx/dy tabloları). Tüm 42/42 birebir doğrulamalar BU listeye
+  karşı yapıldı.
+- Kullanıcının işaret ettiği yöntem kaynakları: `ilyida/vmp3-demo-devirt`,
+  `whoamicrashh/VMProtectDumper`, `whowould/VMProtect-Unpacker` (GitHub) +
+  MyRepo/MVPReverseV3.
+- Kullanıcının verdiği kritik girdiler: localdekendimdenedim.rar (3.9.4 üretimleri —
+  V334 kurtarma kaynağı), universalObfusPublicSrc_kaynak_kod.zip (3.5.1 kaynağı),
+  universalAllver.rar (500MB sigorta kopyası; içindeki VMProtect.exe MD5'si YEAHMAN
+  arşivindekiyle birebir: 24576e5e…), Yandex Disk 11-sürüm arşivi (captcha'ya rağmen
+  V306'da inmiş kopya + eski analizci JSON'u kullanıldı).
+- **GhostStep'in yapay zekâsı çözüldü (V323):** LCG (lineer-kongrüans) rand — oyun
+  mantığı devirt'in yan ürünü olarak ayrıca çözüldü.
+- **rea v6.10.1 + Ghidra 12.2 + JDK25 (V321):** Test_64 analizi çalıştı; resmî 3.9.4
+  korumalı fonksiyonda Ghidra "Failed to create function" hatası aldı — resmî korumanın
+  analiz direncinin bizzat kanıtı (kanıt: v321_kanit/v321_rea_394.log, 136KB).
+- **111. yama noktası (V321):** kayıtlı yolda VM yazmaç seçimi rastgeleleştirildi —
+  10 kopyanın her biri kendi pcode/stack/jmp yazmaçlarını seçer (sabit-yazmaç lifter
+  saldırısına karşı). Instances'ın üç bileşeni: konum (V321) + yön (rand&1) + gövde (V320 junk).
+
 ---
 
 ## 1) KORUMA TİPLERİ TEŞHİSİ — ilk bakışta yol seçimi
@@ -283,7 +306,10 @@ TAMAMEN şifreli (`0xd6ca7585...` rastgele görünümlü).
 7. **Unicorn 2.1 emülatör-sınırı:** hook içi `mem_map` → `UC_ERR_MAP`; unmapped okuma
    False döndürür ama AV istisnasına dönüşmez → VEH-tabanlı unpacker emüle edilemez
    (gerçek Windows dökümü reçetesi).
-8. **32-bit PE bu sandbox'ta koşmaz** (seccomp 32-bit syscall ABI'sini engelliyor:
+8. **img/ham uzay ayrımı (V335 dersi):** pe.img RVA-uzayı görüntüsüdür (bölümler VA'ya
+   serilir); LZMA akışları ve import tabloları HAM dosya ofsetlerindedir → PE.ham alanı.
+   Karıştırılırsa akışlar sıfırdan okunur ve hata SESSİZDIR (boş decode ≠ çökme).
+9. **32-bit PE bu sandbox'ta koşmaz** (seccomp 32-bit syscall ABI'sini engelliyor:
    WOW64 xtajit yok, Kron4ek multi-lib SIGSYS, Debian chroot SIGSYS). 64-bit PE'ler
    Debian wine64 + Kron4ek wow64 ile koşar.
 
@@ -315,7 +341,11 @@ tc_vm            — unicorn yürütme + olay kanalları (§3)
 tc_oracle        — doğal referans koşusu + değer-değer karşılaştırma (§3.4)
 tc_etiket        — komut→tip semantik etiketleme (§4)
 tc_unpack        — 5 adımlı statik unpack (§6): props→PACKER_INFO→LZMA→key→kayıtlar
-tersinecevirici.cpp — CLI: girisler mutasyon vmtrace oracle etiket avtuzak unpack
+tc_lzma          — liblzma raw LZMA1 sarmalayıcı (props 5D 00 00 00 01 sabit) — V335
+tersinecevirici.cpp — CLI: girisler mutasyon vmtrace oracle etiket avtuzak unpack unpack-tam
+                    (unpack-tam = tablo + 5 akış decode + orijinal karşılaştırma + OEP
+                     32/32 OTOMATİK doğrulama + dosya çıktısı — kapalı döngü:
+                     yamalı motorumuzun pack çıktısını da çözer, kanıt V335)
 ```
 **Derleme:** `make` (g++ 14.2, capstone + unicorn statik; libcapstone.so.5 kopyası gerekir)
 **Doğrulanmış regresyon seti (her değişiklikten sonra koşulmalı):**
@@ -342,7 +372,26 @@ tersinecevirici.cpp — CLI: girisler mutasyon vmtrace oracle etiket avtuzak unp
 
 ---
 
-## 12) SONRAKİ YÖNLER (öncelik sırasıyla)
+## 12) SÜREÇ DERSLERİ (tam sohbet kaydından — SOHBET_DERSLERI.md özeti)
+
+1. **Token'ı elle yeniden yazma** — payload'da 1 bayt "düzeltme" JWT imzasını öldürür
+   (V335: 401'in asıl nedeni buydu; ham dosyadan okununca 200). Token işi bitince yok et.
+2. **Kullanıcı deposuna force-push YASAK; push öncesi origin/main..main farkı** (V313:
+   add -A + force 83 commit'i silmiş götürdü; reflog ile tamamı kurtarıldı).
+3. **Ölçmeden "tamamlandı" yazma** — V313'ün "yeni komutlar tamam"ı V314 ölçümünde
+   çürüdü ve AÇIKÇA geri çekildi; iddia-geriçekme disiplini güveni korur.
+4. **Aynı yaklaşım 3 kez başarısızsa değiştir** (V329-V332: 3 uzun koşu = kızak;
+   pivot kaynak-okumaya → statik çözüm 1 saatte geldi).
+5. **Yanlış teşhis bir tur yaktı** (V327 öncesi "antidebug" sanısı): deney matrisi
+   (9 kombinasyon, deterministik sonuç) olmadan neden iddia edilmez.
+6. **Sıkıştırma/şifre formatını tahminle değil KAYNAKTAN oku** — LZMA formatı 5 dakikada
+   loader.cc'den çıktı; S1-S4 imza taramaları saatlerce boşa koşmuştu.
+7. **Ghidra'nın "Failed to create function" hatası** resmî korumanın analiz direnci
+   anlamına gelir — araç hatası değil, hedef başarısı olarak okunur.
+8. **Recycle sigortası:** kritik çıktı anında download/ + upload/YEDEK/ + repo üç kopyası;
+   kur betikleri idempotent (v314_yeniden_kur.sh tek komutla her şeyi getirdi).
+
+## 13) SONRAKİ YÖNLER (öncelik sırasıyla)
 
 1. **.FYP açık loader devirt** — 3.9.4'ün loader rutinleri düz x86-64; V327 AV-tuzak
    desenleri burada STATİK aranabilir (avtuzak komutu .FYP-decode çıktısıyla beslenmeli)
